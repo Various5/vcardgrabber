@@ -290,6 +290,7 @@ def generate_csv_from_vcards(folder, csv_path):
     Generiert eine CSV-Datei aus allen vCard-Dateien in einem Ordner.
     Die CSV enthält die Spalten:
       Filename, Full Name, Organization, Address, Telephone, Email, Role, URL
+    Das Encoding wird auf 'utf-8-sig' gesetzt, damit Umlaute korrekt dargestellt werden.
     """
     entries = []
     for filename in os.listdir(folder):
@@ -299,7 +300,7 @@ def generate_csv_from_vcards(folder, csv_path):
             entries.append(data)
     fieldnames = ["Filename", "Full Name", "Organization", "Address", "Telephone", "Email", "Role", "URL"]
     try:
-        with open(csv_path, 'w', encoding='utf-8', newline='') as csvfile:
+        with open(csv_path, 'w', encoding='utf-8-sig', newline='') as csvfile:
             writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
             writer.writeheader()
             for entry in entries:
@@ -308,27 +309,6 @@ def generate_csv_from_vcards(folder, csv_path):
     except Exception as e:
         print(f"Fehler beim Erstellen der CSV-Datei {csv_path}: {e}")
 
-def main():
-    """
-    Hauptfunktion des Skripts.
-    
-    Ablauf:
-      1. Fragt den Benutzer nach Suchparametern (Sector und Kanton) sowie Wartezeiten.
-      2. Erstellt den Ordner "vcards" als obersten Ordner und darin Unterordner basierend auf Sector und Kanton.
-      3. Ruft die Suchergebnisseiten ab, ermittelt die Detailseiten und lädt die vCards herunter.
-         - Jede vCard wird (sofern noch nicht vorhanden) heruntergeladen und der zugehörige
-           Detailseiten-Link im Format "Dateiname|Detailseiten-Link" in links.txt gespeichert.
-         - Doppelte Verarbeitung wird vermieden.
-      4. Zwischen den Anfragen werden "menschliche" Pausen eingelegt.
-      5. Nach Abschluss des Download-Vorgangs:
-         - Werden alle vCards ohne E-Mail in den Unterordner "keine_email" verschoben.
-         - Das Master-Link-File wird aktualisiert: 
-             * links.txt enthält nur noch Einträge der vCards mit E-Mail,
-             * links_keine_email.txt die übrigen.
-         - Anschließend werden CSV-Dateien (Adressbuch) generiert:
-             * vcards.csv aus dem Hauptordner (mit E-Mail)
-             * vcards_keine_email.csv aus dem Unterordner "keine_email"
-    """
     # Suchparameter abfragen
     misc, kanton = get_user_input()
     
