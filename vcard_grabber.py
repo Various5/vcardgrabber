@@ -168,7 +168,6 @@ def move_vcards_without_email(output_dir, links_txt_path):
     keine_email_dir = os.path.join(output_dir, "keine_email")
     os.makedirs(keine_email_dir, exist_ok=True)
     
-    # Lese die Originaleinträge aus links.txt
     if os.path.exists(links_txt_path):
         with open(links_txt_path, 'r', encoding='utf-8') as f:
             lines = f.readlines()
@@ -177,7 +176,6 @@ def move_vcards_without_email(output_dir, links_txt_path):
     main_lines = []
     keine_email_lines = []
     
-    # Durchsuche alle vCard-Dateien im Hauptordner
     for filename in os.listdir(output_dir):
         if filename.lower().endswith(".vcf"):
             filepath = os.path.join(output_dir, filename)
@@ -191,7 +189,6 @@ def move_vcards_without_email(output_dir, links_txt_path):
             except Exception as e:
                 print(f"Fehler beim Überprüfen von {filename}: {e}")
     
-    # Aktualisiere die Link-Dateien
     for line in lines:
         line = line.strip()
         if not line:
@@ -255,7 +252,6 @@ def parse_vcard(filepath):
                     if len(parts) == 2:
                         adr = parts[1].strip()
                         adr_parts = adr.split(";")
-                        # Zusammenfügen der nicht-leeren Felder
                         data["Address"] = ", ".join([p for p in adr_parts if p])
                 elif line.upper().startswith("TEL"):
                     parts = line.split(":", 1)
@@ -309,20 +305,35 @@ def generate_csv_from_vcards(folder, csv_path):
     except Exception as e:
         print(f"Fehler beim Erstellen der CSV-Datei {csv_path}: {e}")
 
-    # Suchparameter abfragen
-    misc, kanton = get_user_input()
+def main():
+    """
+    Hauptfunktion des Skripts.
     
-    # Wartezeiten abfragen
+    Ablauf:
+      1. Fragt den Benutzer nach Suchparametern (Sector und Kanton) sowie Wartezeiten.
+      2. Erstellt den Ordner "vcards" als obersten Ordner und darin Unterordner basierend auf Sector und Kanton.
+      3. Ruft die Suchergebnisseiten ab, ermittelt die Detailseiten und lädt die vCards herunter.
+         - Jede vCard wird (sofern noch nicht vorhanden) heruntergeladen und der zugehörige
+           Detailseiten-Link im Format "Dateiname|Detailseiten-Link" in links.txt gespeichert.
+         - Doppelte Verarbeitung wird vermieden.
+      4. Zwischen den Anfragen werden "menschliche" Pausen eingelegt.
+      5. Nach Abschluss des Download-Vorgangs:
+         - Werden alle vCards ohne E-Mail in den Unterordner "keine_email" verschoben.
+         - Das Master-Link-File wird aktualisiert:
+             * links.txt enthält nur noch Einträge der vCards mit E-Mail,
+             * links_keine_email.txt die übrigen.
+         - Anschließend werden CSV-Dateien (Adressbuch) generiert:
+             * vcards.csv aus dem Hauptordner (mit E-Mail)
+             * vcards_keine_email.csv aus dem Unterordner "keine_email"
+    """
+    misc, kanton = get_user_input()
     detail_page_delay, search_page_delay, additional_threshold, additional_pause = get_delay_settings()
     
-    # Erstelle den Ausgabeordner: "vcards" als oberster Ordner, dann Sector und Kanton
     output_dir = os.path.join("vcards", misc.lower(), kanton.lower())
     os.makedirs(output_dir, exist_ok=True)
     
-    # Pfad zur zentralen Master-Link-Datei (Format: "Dateiname|Detailseiten-Link")
     links_txt_path = os.path.join(output_dir, "links.txt")
     
-    # Abrufen der ersten Suchseite, um die Gesamtanzahl der Ergebnisse zu ermitteln
     try:
         first_page_html = get_search_page(1, misc, kanton)
     except Exception as e:
@@ -346,7 +357,6 @@ def generate_csv_from_vcards(folder, csv_path):
     downloaded_count = 0
     processed_details = set()
 
-    # Iteriere über alle Suchseiten
     for page in range(1, total_pages + 1):
         print(f"\n--- Seite {page} von {total_pages} ---")
         try:
@@ -406,10 +416,8 @@ def generate_csv_from_vcards(folder, csv_path):
 
     print(f"\nFertig! Insgesamt wurden {downloaded_count} vCards heruntergeladen und in '{output_dir}' abgelegt.")
     
-    # Verschiebe vCards ohne E-Mail in den Unterordner "keine_email" und aktualisiere die Link-Dateien
     move_vcards_without_email(output_dir, links_txt_path)
     
-    # Generiere CSV-Dateien aus den vCard-Inhalten (Adressbuch)
     csv_main = os.path.join(output_dir, "vcards.csv")
     generate_csv_from_vcards(output_dir, csv_main)
     
