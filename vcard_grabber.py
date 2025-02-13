@@ -5,29 +5,26 @@ import csv
 import os
 import json
 from datetime import datetime
+from bs4 import BeautifulSoup
 
-API_KEY = "API--KEY--GOES--HERE"  # Your API key
+# --- API configuration ---
+API_KEY = "2e5a1fc1f167d9e95e3205fe066abffa"  # Your API key
 BASE_URL = "https://tel.search.ch/api/"
 USAGE_FILE = "api_usage.json"
 MONTHLY_QUOTA = 1000
 
+# --- Helper functions ---
 def human_sleep(base_delay):
-    """
-    Sleep for base_delay seconds with ±20% jitter.
-    """
+    """Sleep for base_delay seconds with ±20% jitter."""
     actual_delay = base_delay * random.uniform(0.8, 1.2)
     time.sleep(actual_delay)
 
 def load_api_usage():
-    """
-    Loads API usage info from a JSON file.
-    If the saved month is not the current month, reset the counter.
-    """
+    """Load API usage info from a JSON file. Reset counter if month has changed."""
     current_month = datetime.now().strftime("%Y-%m")
     try:
         with open(USAGE_FILE, "r") as f:
             usage = json.load(f)
-        # Reset counter if month has changed
         if usage.get("month") != current_month:
             usage = {"month": current_month, "calls": 0}
     except Exception:
@@ -35,26 +32,19 @@ def load_api_usage():
     return usage
 
 def save_api_usage(usage):
-    """
-    Saves API usage info to a JSON file.
-    """
+    """Save API usage info to a JSON file."""
     with open(USAGE_FILE, "w") as f:
         json.dump(usage, f)
 
 def increment_api_counter():
-    """
-    Increments the API call counter by one and saves it.
-    Returns the new total.
-    """
+    """Increment the API call counter and save it. Returns the new total."""
     usage = load_api_usage()
     usage["calls"] += 1
     save_api_usage(usage)
     return usage["calls"]
 
 def show_remaining_api_calls():
-    """
-    Loads the usage info and prints how many API calls are remaining.
-    """
+    """Display how many API calls are remaining for this month."""
     usage = load_api_usage()
     remaining = MONTHLY_QUOTA - usage.get("calls", 0)
     print(f"You have {remaining} API calls remaining for this month.")
@@ -63,37 +53,57 @@ def show_remaining_api_calls():
     return remaining
 
 def get_user_input():
-    what = input("Bitte gib den Suchbegriff (z.B. metallbau) ein: ").strip()
-    where = input("Bitte gib den Ort/Kanton (z.B. AG) ein: ").strip()
-    return what, where
-
-def fetch_results(what, where, start=0, maxnum=10):
     """
-    Fetch a batch of listings from the API with the given parameters.
-    Increments the API call counter on a successful call.
+    Ask the user for search parameters.
+    'was' is the general search string (e.g. metallbau).
+    'wo' is the geographic refinement (e.g. SO).
+    """
+    was = input("Bitte gib den Suchbegriff ein (z.B. metallbau): ").strip()
+    wo = input("Bitte gib den Ort/Kanton ein (z.B. SO): ").strip()
+    return was, wo
+
+def fetch_results(was, wo, pos=1, maxnum=10):
+    """
+    Fetch a batch of listings from the API.
+    - 'was': general search string.
+    - 'wo': geographic search.
+    - 'pos': starting position (first result is 1).
+    - 'maxnum': number of results per call.
+    Returns a BeautifulSoup-parsed XML (Atom) feed.
     """
     usage = load_api_usage()
     if usage.get("calls", 0) >= MONTHLY_QUOTA:
         raise Exception("API quota exceeded for this month!")
-        
+    
     params = {
         "key": API_KEY,
-        "what": what,
-        "where": where,
-        "start": start,
+        "was": was,
+        "wo": wo,
+        "pos": pos,
         "maxnum": maxnum,
-        "lang": "de",    # optional (de, en, fr, it)
-        "format": "json" # ensure JSON response
+        "lang": "de"
     }
     response = requests.get(BASE_URL, params=params)
     response.raise_for_status()
-    # Count this API call
     increment_api_counter()
-    return response.json()
+    # Parse the Atom XML response using the lxml parser
+    soup = BeautifulSoup(response.content, "xml")
+    return soup
+
+def sanitize_filename(filename):
+    """
+    Replace characters that are not allowed in Windows filenames.
+    Invalid characters: <>:"/\\|?*
+    """
+    invalid_chars = '<>:"/\\|?*'
+    for char in invalid_chars:
+        filename = filename.replace(char, "_")
+    return filename
 
 def download_vcard(vcard_url, output_folder, entry_id):
     """
-    Download vCard from vcard_url and save to output_folder with a unique filename.
+    Download a vCard from vcard_url and save it in output_folder.
+    Uses entry_id to create a filename if needed.
     """
     if not vcard_url:
         return None
@@ -102,7 +112,10 @@ def download_vcard(vcard_url, output_folder, entry_id):
     resp = requests.get(vcard_url)
     resp.raise_for_status()
     
-    filename = os.path.basename(vcard_url)
+    # Remove query parameters and get the basename
+    filename = os.path.basename(vcard_url.split("?")[0])
+    filename = sanitize_filename(filename)
+    
     if not filename.lower().endswith(".vcf"):
         filename = f"{entry_id}.vcf"
     
@@ -112,110 +125,199 @@ def download_vcard(vcard_url, output_folder, entry_id):
     
     return filepath
 
+def parse_entry(entry):
+    """
+    Parse an <entry> element from the Atom feed and extract fields.
+    Returns a dictionary with the desired fields.
+    """
+    company = entry.find("tel:org")
+    company = company.text if company else ""
+    
+    firstname = entry.find("tel:firstname")
+    firstname = firstname.text if firstname else ""
+    
+    lastname = entry.find("tel:name")
+    lastname = lastname.text if lastname else ""
+    
+    street = entry.find("tel:street")
+    street = street.text if street else ""
+    
+    streetno = entry.find("tel:streetno")
+    streetno = streetno.text if streetno else ""
+    
+    zip_ = entry.find("tel:zip")
+    zip_ = zip_.text if zip_ else ""
+    
+    city = entry.find("tel:city")
+    city = city.text if city else ""
+    
+    address = f"{street} {streetno}, {zip_} {city}".strip(", ")
+    
+    phone_elems = entry.find_all("tel:phone")
+    phone_numbers = [elem.text.strip() for elem in phone_elems if elem.text]
+    phone = ", ".join(phone_numbers)
+    
+    email = ""
+    for extra in entry.find_all("tel:extra"):
+        if extra.get("type") and extra.get("type").lower() == "email":
+            email = extra.text.strip()
+            break
+    
+    vcard_link = entry.find("link", {"type": "text/x-vcard"})
+    vcard_url = vcard_link["href"] if vcard_link and vcard_link.has_attr("href") else ""
+    
+    entry_id = entry.find("id")
+    entry_id = entry_id.text if entry_id else "unknown"
+    
+    updated = entry.find("updated")
+    updated = updated.text if updated else ""
+    
+    return {
+        "EntryId": entry_id,
+        "Updated": updated,
+        "Company": company,
+        "Firstname": firstname,
+        "Lastname": lastname,
+        "Address": address,
+        "Phone": phone,
+        "Email": email,
+        "VCardUrl": vcard_url,
+        "VCardPath": ""  # to be filled when downloaded
+    }
+
+def load_existing_entries(csv_path):
+    """
+    Load existing entries from the master CSV file.
+    Returns a dictionary keyed by EntryId.
+    """
+    entries = {}
+    if os.path.exists(csv_path):
+        with open(csv_path, 'r', encoding='utf-8-sig') as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                entry_id = row.get("EntryId")
+                if entry_id:
+                    entries[entry_id] = row
+    return entries
+
+def write_csv(csv_path, fieldnames, rows):
+    """
+    Write rows (a list of dictionaries) to a CSV file with given fieldnames.
+    This function filters out any keys not in fieldnames.
+    """
+    with open(csv_path, 'w', encoding='utf-8-sig', newline='') as csvfile:
+        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+        writer.writeheader()
+        for row in rows:
+            filtered_row = {key: row.get(key, "") for key in fieldnames}
+            writer.writerow(filtered_row)
+
+# --- Main function ---
 def main():
-    """
-    Main routine:
-      1. Show remaining API calls.
-      2. Get search parameters.
-      3. Query the API (with pagination) until all results are collected.
-      4. Optionally download each listing's vCard.
-      5. Save results in a CSV file.
-    """
+    # Show remaining API calls
     remaining = show_remaining_api_calls()
     if remaining <= 0:
         return
-
-    what, where = get_user_input()
-    output_folder = f"results_{what}_{where}"
-    os.makedirs(output_folder, exist_ok=True)
     
-    csv_path = os.path.join(output_folder, "results.csv")
-    fieldnames = ["Company", "Firstname", "Lastname", "Address", "Phone", "Email", "VCardPath"]
+    was, wo = get_user_input()
+    # Use lowercase for folder names regardless of input
+    base_folder = os.path.join(was.lower(), wo.lower())
+    csv_folder = os.path.join(base_folder, "csv")
+    vcards_email_folder = os.path.join(base_folder, "vcards_email")
+    vcards_noemail_folder = os.path.join(base_folder, "vcards_noemail")
     
-    all_entries = []
-    start = 0
-    maxnum = 10  # number of results per API call
-    total_found = 0
-    downloaded_count = 0
+    # Create folders if they don't exist
+    for folder in [base_folder, csv_folder, vcards_email_folder, vcards_noemail_folder]:
+        os.makedirs(folder, exist_ok=True)
+    
+    master_csv = os.path.join(csv_folder, "results_master.csv")
+    csv_with_email = os.path.join(csv_folder, "vcards_with_email.csv")
+    csv_without_email = os.path.join(csv_folder, "vcards_without_email.csv")
+    
+    # Load existing entries (if any) to avoid re-scanning
+    master_entries = load_existing_entries(master_csv)
+    
+    pos = 1      # API result position starts at 1
+    maxnum = 10  # Number of results per API call
+    total_results = None
 
     while True:
-        # Fetch a batch of up to 'maxnum' results
         try:
-            data = fetch_results(what, where, start=start, maxnum=maxnum)
+            soup = fetch_results(was, wo, pos=pos, maxnum=maxnum)
         except Exception as ex:
             print(f"Error during API call: {ex}")
             break
         
-        # 'count' is the number of items in this batch; 'total' is overall total
-        count = data.get("count", 0)
-        total_found = data.get("total", 0)
+        total_tag = soup.find("openSearch:totalResults")
+        total_results = int(total_tag.text) if total_tag and total_tag.text.isdigit() else 0
         
-        entries = data.get("entries", [])
+        entries = soup.find_all("entry")
         if not entries:
+            print("No more entries found.")
             break
         
-        print(f"Fetched {count} entries, total fetched so far: {start + count}/{total_found}")
-
+        print(f"Fetched {len(entries)} entries, total results: {total_results}, starting at pos {pos}")
+        
         for entry in entries:
-            company = entry.get("company", "")
-            firstname = entry.get("firstname", "")
-            lastname = entry.get("lastname", "")
-            
-            # Combine address fields
-            street = entry.get("street", "")
-            streetno = entry.get("streetno", "")
-            zip_ = entry.get("zip", "")
-            city = entry.get("city", "")
-            address = f"{street} {streetno}, {zip_} {city}".strip(", ")
-            
-            # Concatenate phone numbers if provided
-            phone = ""
-            if "phone" in entry:
-                phone_list = [p.get("dial", "") for p in entry["phone"] if p.get("dial")]
-                phone = ", ".join(phone_list)
-            
-            # Concatenate email addresses if provided
-            email = ""
-            if "email" in entry:
-                email_list = [e for e in entry["email"] if e]
-                email = ", ".join(email_list)
-            
-            # Download vCard if available
-            vcard_url = entry.get("vcard", "")
-            vcard_path = ""
-            if vcard_url:
-                try:
-                    vcard_path = download_vcard(vcard_url, output_folder, entry_id=entry.get("id", "unknown"))
-                    downloaded_count += 1
-                except Exception as ex:
-                    print(f"vCard download failed for {vcard_url}: {ex}")
-            
-            all_entries.append({
-                "Company": company,
-                "Firstname": firstname,
-                "Lastname": lastname,
-                "Address": address,
-                "Phone": phone,
-                "Email": email,
-                "VCardPath": vcard_path
-            })
+            data = parse_entry(entry)
+            eid = data["EntryId"]
+            # Check if entry exists in master; update only if the remote 'Updated' is newer.
+            if eid in master_entries:
+                if data["Updated"] > master_entries[eid].get("Updated", ""):
+                    print(f"Updating entry {eid} (newer version found).")
+                    if data["VCardUrl"]:
+                        folder_to_use = vcards_email_folder if data["Email"].strip() != "" else vcards_noemail_folder
+                        try:
+                            vcard_path = download_vcard(data["VCardUrl"], folder_to_use, data["EntryId"])
+                            data["VCardPath"] = vcard_path
+                        except Exception as ex:
+                            print(f"vCard download failed for {data['VCardUrl']}: {ex}")
+                    master_entries[eid] = data
+                else:
+                    # If vCard file is missing, try to download it
+                    if data["VCardUrl"] and (not master_entries[eid].get("VCardPath") or not os.path.exists(master_entries[eid].get("VCardPath"))):
+                        folder_to_use = vcards_email_folder if data["Email"].strip() != "" else vcards_noemail_folder
+                        try:
+                            vcard_path = download_vcard(data["VCardUrl"], folder_to_use, data["EntryId"])
+                            master_entries[eid]["VCardPath"] = vcard_path
+                        except Exception as ex:
+                            print(f"vCard download failed for {data['VCardUrl']}: {ex}")
+            else:
+                print(f"Adding new entry {eid}.")
+                if data["VCardUrl"]:
+                    folder_to_use = vcards_email_folder if data["Email"].strip() != "" else vcards_noemail_folder
+                    try:
+                        vcard_path = download_vcard(data["VCardUrl"], folder_to_use, data["EntryId"])
+                        data["VCardPath"] = vcard_path
+                    except Exception as ex:
+                        print(f"vCard download failed for {data['VCardUrl']}: {ex}")
+                master_entries[eid] = data
         
-        start += count
-        if start >= total_found:
+        pos += len(entries)
+        if pos > total_results:
             break
-
+        
         human_sleep(2.0)
-
-    # Save all entries to CSV
-    print(f"\nSaving {len(all_entries)} entries to {csv_path}")
-    with open(csv_path, 'w', encoding='utf-8-sig', newline='') as csvfile:
-        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
-        writer.writeheader()
-        for row in all_entries:
-            writer.writerow(row)
-
-    print(f"Done! Downloaded {downloaded_count} vCards (if available).")
-    print(f"CSV saved to: {csv_path}")
+    
+    # Convert master_entries dict to a list sorted by Company (for convenience)
+    all_entries = sorted(master_entries.values(), key=lambda x: x.get("Company", "").lower())
+    
+    # Write/update the master CSV
+    master_fieldnames = ["EntryId", "Updated", "Company", "Firstname", "Lastname", "Address", "Phone", "Email", "VCardPath"]
+    write_csv(master_csv, master_fieldnames, all_entries)
+    print(f"\nMaster CSV updated with {len(all_entries)} entries at: {master_csv}")
+    
+    # Filter entries into those with and without emails
+    filtered_fieldnames = ["Company", "Firstname", "Lastname", "Address", "Phone", "Email", "VCardPath"]
+    with_email = [entry for entry in all_entries if entry.get("Email", "").strip() != ""]
+    without_email = [entry for entry in all_entries if entry.get("Email", "").strip() == ""]
+    
+    write_csv(csv_with_email, filtered_fieldnames, with_email)
+    write_csv(csv_without_email, filtered_fieldnames, without_email)
+    
+    print(f"CSV with emails saved to: {csv_with_email}")
+    print(f"CSV without emails saved to: {csv_without_email}")
+    print("Done!")
 
 if __name__ == "__main__":
     main()
