@@ -56,12 +56,13 @@ def get_delay_settings():
         additional_pause = 300
     return detail_page_delay, search_page_delay, additional_threshold, additional_pause
 
-def get_search_page(page_number, misc, kanton):
+def get_search_page(session, page_number, misc, kanton):
     """
     Lädt die Suchergebnisseite für eine bestimmte Seite und Suchparameter.
     Mit 'firma=1' wird sichergestellt, dass nur Firmenkunden angezeigt werden.
     
     Parameter:
+      - session: requests.Session Objekt
       - page_number: Nummer der Suchergebnisseite
       - misc: Suchbegriff für den Sector
       - kanton: Suchbegriff für den Kanton
@@ -76,7 +77,7 @@ def get_search_page(page_number, misc, kanton):
         'pages': page_number
     }
     print(f"\nAbrufe Suchseite {page_number} (misc='{misc}', kanton='{kanton}', firma=1)...")
-    response = requests.get(SEARCH_URL, params=params)
+    response = session.get(SEARCH_URL, params=params)
     response.raise_for_status()
     return response.text
 
@@ -137,19 +138,20 @@ def extract_vcard_url(html):
         return vcard_link['href']
     return None
 
-def download_vcard(vcard_url, filepath):
+def download_vcard(session, vcard_url, filepath):
     """
     Lädt die vCard von der angegebenen URL herunter und speichert sie unter dem
     angegebenen Dateipfad.
     
     Parameter:
+      - session: requests.Session Objekt
       - vcard_url: URL, unter der die vCard verfügbar ist
       - filepath: Vollständiger Dateipfad, unter dem die vCard gespeichert werden soll
     """
     if vcard_url.startswith('/'):
         vcard_url = BASE_URL + vcard_url
     print(f"vCard herunterladen von {vcard_url} ...")
-    response = requests.get(vcard_url)
+    response = session.get(vcard_url)
     response.raise_for_status()
     with open(filepath, 'wb') as f:
         f.write(response.content)
@@ -189,6 +191,7 @@ def move_vcards_without_email(output_dir, links_txt_path):
             except Exception as e:
                 print(f"Fehler beim Überprüfen von {filename}: {e}")
     
+    # Aktualisieren von links.txt und links_keine_email.txt
     for line in lines:
         line = line.strip()
         if not line:
@@ -333,9 +336,23 @@ def main():
     os.makedirs(output_dir, exist_ok=True)
     
     links_txt_path = os.path.join(output_dir, "links.txt")
-    
+
+    # 1) Create a requests.Session to reuse connections
+    session = requests.Session()
+
+    # 2) Load already processed detail URLs from links.txt (previous runs) to skip them
+    processed_details = set()
+    if os.path.exists(links_txt_path):
+        with open(links_txt_path, 'r', encoding='utf-8') as f:
+            for line in f:
+                parts = line.strip().split("|", 1)
+                if len(parts) == 2:
+                    filename, detail_url = parts
+                    processed_details.add(detail_url)
+
     try:
-        first_page_html = get_search_page(1, misc, kanton)
+        # 3) Fetch the first page once and reuse the HTML
+        first_page_html = get_search_page(session, 1, misc, kanton)
     except Exception as e:
         print(f"Fehler beim Abrufen der ersten Suchseite: {e}")
         return
@@ -345,6 +362,7 @@ def main():
         print("Keine Ergebnisse gefunden.")
         return
 
+    # Extract detail URLs from the first page (for computing results_per_page)
     detail_urls_first_page = extract_detail_urls(first_page_html)
     if not detail_urls_first_page:
         print("Keine Detailseiten auf der ersten Suchseite gefunden.")
@@ -355,12 +373,68 @@ def main():
     print(f"Gesamte Ergebnisse: {total_results}, Ergebnisse pro Seite: {results_per_page}, insgesamt {total_pages} Seiten.")
 
     downloaded_count = 0
-    processed_details = set()
 
-    for page in range(1, total_pages + 1):
+    # We'll handle the first page outside the loop to avoid re-downloading
+    pages_to_process = list(range(2, total_pages + 1))  # start from page 2, up to total_pages
+
+    # --- Handle page 1 ---
+    print(f"\n--- Seite 1 von {total_pages} ---")
+    detail_urls = extract_detail_urls(first_page_html)
+    print(f"Auf Suchseite 1 wurden {len(detail_urls)} Detailseiten gefunden.")
+
+    for detail in detail_urls:
+        detail_url = BASE_URL + detail
+
+        # If we already processed this detail URL in a previous run, skip
+        if detail_url in processed_details:
+            print(f"Detailseite {detail_url} wurde bereits verarbeitet. Überspringe.")
+            continue
+
+        processed_details.add(detail_url)
+
+        try:
+            print(f"Detailseite abrufen: {detail_url}")
+            detail_resp = session.get(detail_url)
+            detail_resp.raise_for_status()
+            detail_html = detail_resp.text
+        except Exception as e:
+            print(f"Fehler beim Abrufen der Detailseite {detail_url}: {e}")
+            continue
+
+        vcard_link = extract_vcard_url(detail_html)
+        if not vcard_link:
+            print(f"Kein vCard-Link auf Detailseite gefunden: {detail_url}")
+            continue
+
+        parsed = urllib.parse.urlparse(vcard_link)
+        filename = os.path.basename(parsed.path)
+        vcard_filepath = os.path.join(output_dir, filename)
+        keine_email_path = os.path.join(output_dir, "keine_email", filename)
+
+        if os.path.exists(vcard_filepath) or os.path.exists(keine_email_path):
+            print(f"{filename} existiert bereits (im Hauptordner oder in 'keine_email'). Überspringe diesen Eintrag.")
+        else:
+            try:
+                download_vcard(session, vcard_link, vcard_filepath)
+                downloaded_count += 1
+                print(f"Heruntergeladen: {filename}")
+                with open(links_txt_path, 'a', encoding='utf-8') as txt_file:
+                    txt_file.write(f"{filename}|{detail_url}\n")
+            except Exception as e:
+                print(f"Fehler beim Herunterladen der vCard von {vcard_link}: {e}")
+                continue
+
+        human_sleep(detail_page_delay)
+        if downloaded_count > 0 and downloaded_count % additional_threshold == 0:
+            print(f"\nEs wurden {downloaded_count} vCards heruntergeladen. Warte zusätzlich {additional_pause} Sekunden...")
+            human_sleep(additional_pause)
+    # --- End handling page 1 ---
+
+    # --- Now loop through pages 2..total_pages ---
+    for page in pages_to_process:
         print(f"\n--- Seite {page} von {total_pages} ---")
         try:
-            page_html = get_search_page(page, misc, kanton)
+            page_html = get_search_page(session, page, misc, kanton)
         except Exception as e:
             print(f"Fehler beim Abrufen der Suchseite {page}: {e}")
             continue
@@ -373,11 +447,12 @@ def main():
             if detail_url in processed_details:
                 print(f"Detailseite {detail_url} wurde bereits verarbeitet. Überspringe.")
                 continue
+
             processed_details.add(detail_url)
-            
+
             try:
                 print(f"Detailseite abrufen: {detail_url}")
-                detail_resp = requests.get(detail_url)
+                detail_resp = session.get(detail_url)
                 detail_resp.raise_for_status()
                 detail_html = detail_resp.text
             except Exception as e:
@@ -398,7 +473,7 @@ def main():
                 print(f"{filename} existiert bereits (im Hauptordner oder in 'keine_email'). Überspringe diesen Eintrag.")
             else:
                 try:
-                    download_vcard(vcard_link, vcard_filepath)
+                    download_vcard(session, vcard_link, vcard_filepath)
                     downloaded_count += 1
                     print(f"Heruntergeladen: {filename}")
                     with open(links_txt_path, 'a', encoding='utf-8') as txt_file:
