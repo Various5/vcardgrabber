@@ -8,7 +8,7 @@ from datetime import datetime
 from bs4 import BeautifulSoup
 
 # --- API configuration ---
-API_KEY = "2e5a1fc1f167d9e95e3205fe066abffa"  # Your API key
+API_KEY = "API--KEY--GOES--HERE"  # Your API key
 BASE_URL = "https://tel.search.ch/api/"
 USAGE_FILE = "api_usage.json"
 MONTHLY_QUOTA = 1000
